@@ -8,14 +8,13 @@ import logging
 import re
 
 from vkontakte_api.decorators import fetch_all
-from vkontakte_api.mixins import CountOffsetManagerMixin, AfterBeforeManagerMixin, OwnerableModelMixin
+from vkontakte_api.mixins import CountOffsetManagerMixin, AfterBeforeManagerMixin, OwnerableModelMixin, AuthorableModelMixin
 from vkontakte_api.models import VkontakteModel, VkontakteCRUDModel
-from vkontakte_groups.models import Group
-
-from vkontakte_users.models import User
-#from vkontakte_video.models import Video
-#import signals
 log = logging.getLogger('vkontakte_comments')
+
+
+def get_methods_namespace(object):
+    return object.methods_namespace or object.__class__.remote.methods_namespace
 
 
 class CommentRemoteManager(CountOffsetManagerMixin, AfterBeforeManagerMixin):
@@ -35,7 +34,7 @@ class CommentRemoteManager(CountOffsetManagerMixin, AfterBeforeManagerMixin):
             if kwargs['after'] and sort == 'asc':
                 raise ValueError("Attribute `sort` should be equal to 'desc' with defined `after` attribute")
 
-        kwargs["methods_namespace"] = object.methods_namespace  # TODO: replace to RemoteManager.methods_namespace
+        kwargs["methods_namespace"] = get_methods_namespace(object)
 
         # owner_id идентификатор пользователя или сообщества, которому принадлежит фотография.
         # Обратите внимание, идентификатор сообщества в параметре owner_id необходимо указывать со знаком "-" — например, owner_id=-1 соответствует идентификатору сообщества ВКонтакте API (club1)
@@ -46,8 +45,7 @@ class CommentRemoteManager(CountOffsetManagerMixin, AfterBeforeManagerMixin):
         # идентификатор объекта к которому оставлен комментарий.
         # напр 'video_id', 'photo_id'
         # int (числовое значение), обязательный параметр
-        object_remote_field = '%s_id' % object.methods_namespace  # TODO: replace to RemoteManager.methods_namespace
-        kwargs[object_remote_field] = object.remote_id
+        kwargs[object.comments_remote_related_name] = object.remote_id
 
         # need_likes 1 — будет возвращено дополнительное поле likes. По умолчанию поле likes не возвращается.
         # флаг, может принимать значения 1 или 0
@@ -57,9 +55,10 @@ class CommentRemoteManager(CountOffsetManagerMixin, AfterBeforeManagerMixin):
         # строка
         kwargs['sort'] = sort
 
+        object_ct = ContentType.objects.get_for_model(object)
         kwargs['extra_fields'] = {
-            'object_content_type': ContentType.objects.get_for_model(object._meta.model),
-            'object_content_type_id': ContentType.objects.get_for_model(object._meta.model).pk,
+            'object_content_type': object_ct,
+            'object_content_type_id': object_ct.pk,
             'object_id': object.pk,
             'object': object,
         }
@@ -67,21 +66,17 @@ class CommentRemoteManager(CountOffsetManagerMixin, AfterBeforeManagerMixin):
         return super(CommentRemoteManager, self).fetch(**kwargs)
 
 
-class Comment(VkontakteModel, VkontakteCRUDModel):
+class Comment(AuthorableModelMixin, VkontakteModel, VkontakteCRUDModel):
 
-    fields_required_for_update = ['comment_id', 'owner_id']
+    fields_required_for_update = ['comment_id', 'owner_id', 'methods_namespace']
     _commit_remote = False
 
     remote_id = models.CharField(
         u'ID', primary_key=True, max_length=20, help_text=u'Уникальный идентификатор', unique=True)
 
-    object_content_type = models.ForeignKey(ContentType, related_name='comments')
+    object_content_type = models.ForeignKey(ContentType, related_name='content_type_objects_vkontakte_comments')
     object_id = models.PositiveIntegerField(db_index=True)
-    object = generic.GenericForeignKey('object_content_type', 'object_id')  # 'object_content_type', 'object_id'
-
-    author_content_type = models.ForeignKey(ContentType, related_name='video_comments')
-    author_id = models.PositiveIntegerField(db_index=True)
-    author = generic.GenericForeignKey('author_content_type', 'author_id')
+    object = generic.GenericForeignKey('object_content_type', 'object_id')
 
     date = models.DateTimeField(help_text=u'Дата создания', db_index=True)
     text = models.TextField(u'Текст сообщения')
@@ -105,11 +100,6 @@ class Comment(VkontakteModel, VkontakteCRUDModel):
         verbose_name = u'Комментарий Вконтакте'
         verbose_name_plural = u'Комментарии Вконтакте'
 
-    def __init__(self, *args, **kwargs):
-        super(Comment, self).__init__(*args, **kwargs)
-        if self.object:
-            self._meta.model.methods_namespace = self.get_methods_namespace()
-
     @property
     def owner_remote_id(self):
         # return self.photo.remote_id.split('_')[0]
@@ -130,9 +120,6 @@ class Comment(VkontakteModel, VkontakteCRUDModel):
     def remote_id_short(self):
         return self.remote_id.split('_')[1]
 
-    def get_methods_namespace(self):
-        return self.object.methods_namespace
-
     def prepare_create_params(self, from_group=False, **kwargs):
         if self.author == self.object.owner and self.author_content_type.model == 'group':
             from_group = True
@@ -142,12 +129,9 @@ class Comment(VkontakteModel, VkontakteCRUDModel):
 #            'reply_to_comment': self.reply_for.id if self.reply_for else '',
             'from_group': int(from_group),
             'attachments': kwargs.get('attachments', ''),
+            'methods_namespace': get_methods_namespace(self.object),
+            self.object.comments_remote_related_name: self.object.remote_id,
         })
-
-        #kwargs["methods_namespace"] = self.get_methods_namespace()
-
-        object_remote_field = '%s_id' % self.get_methods_namespace()
-        kwargs[object_remote_field] = self.object.remote_id  # e.g. 'video_id' or 'photo_id'
         return kwargs
 
     def prepare_update_params(self, **kwargs):
@@ -156,15 +140,15 @@ class Comment(VkontakteModel, VkontakteCRUDModel):
             'comment_id': self.remote_id_short,
             'message': self.text,
             'attachments': kwargs.get('attachments', ''),
+            'methods_namespace': get_methods_namespace(self.object),
         })
-        #kwargs["methods_namespace"] = self.get_methods_namespace()
         return kwargs
 
     def prepare_delete_params(self):
         return {
             'owner_id': self.owner_remote_id,
             'comment_id': self.remote_id_short,
-            #'methods_namespace': self.get_methods_namespace(),
+            'methods_namespace': get_methods_namespace(self.object),
         }
 
     def parse_remote_id_from_response(self, response):
@@ -173,6 +157,10 @@ class Comment(VkontakteModel, VkontakteCRUDModel):
         return None
 
     def get_or_create_group_or_user(self, remote_id):
+        # TODO: refactor this method, may be put it to AuthorableMixin
+        from vkontakte_groups.models import Group
+        from vkontakte_users.models import User
+
         if remote_id > 0:
             Model = User
         elif remote_id < 0:

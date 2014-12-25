@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 from django.contrib import admin
-#from django.core.urlresolvers import reverse
 from vkontakte_api.admin import VkontakteModelAdmin
-from . models import Comment
+from .models import Comment
 
 
 class CommentAdmin(VkontakteModelAdmin):

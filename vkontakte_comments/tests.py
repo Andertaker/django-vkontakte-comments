@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
-from django.test import TestCase
-from django.utils import timezone
 import json
 
+from django.test import TestCase
+from django.utils import timezone
 import mock
 from vkontakte_groups.factories import GroupFactory
+from vkontakte_users.factories import UserFactory, User
 from vkontakte_video.factories import AlbumFactory, VideoFactory
 from vkontakte_video.models import Album, Video
-from vkontakte_users.factories import UserFactory, User
-
 from . models import Comment
 
 GROUP_ID = 16297716  # https://vk.com/cocacola
@@ -110,9 +109,15 @@ class CommentTest(TestCase):
             self.assertEqual(comment_remote.text, comment.text)
             self.assertEqual(comment_remote.author, comment.author)
 
-        Comment.remote.fetch_by_object(object=video)
-        self.assertEqual(Comment.objects.count(), 0)
+        # try to delete comments from prev tests
+        for comment in Comment.remote.fetch_by_object(object=video):
+            comment.delete(commit_remote=True)
+        # checks there is no remote and local comments
+        comments = Comment.remote.fetch_by_object(object=video)
+        self.assertEqual(comments.count(), 0, 'Error: There are %s comments from previous test. Delete them manually here %s' % (
+            comments.count(), video.get_url()))
 
+        # create
         comment = Comment(text='Test comment', object=video, author=owner, date=timezone.now())
         comment.save(commit_remote=True)
         self.objects_to_delete += [comment]
