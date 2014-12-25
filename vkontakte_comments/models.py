@@ -8,10 +8,10 @@ import logging
 import re
 
 from vkontakte_api.decorators import fetch_all
+from vkontakte_api.mixins import CountOffsetManagerMixin, AfterBeforeManagerMixin, OwnerableModelMixin
 from vkontakte_api.models import VkontakteModel, VkontakteCRUDModel
 from vkontakte_groups.models import Group
 
-from vkontakte_api.mixins import CountOffsetManagerMixin, AfterBeforeManagerMixin, OwnerableModelMixin
 from vkontakte_users.models import User
 #from vkontakte_video.models import Video
 #import signals
@@ -199,7 +199,7 @@ class Comment(VkontakteModel, VkontakteCRUDModel):
             response['text'] = response.pop('message')
 
         super(Comment, self).parse(response)
-        if self.__dict__.has_key('object'):
+        if 'object' in self.__dict__:
             self.object = self.__dict__['object']  # TODO: check is it should be already saved or not
 
         if '_' not in str(self.remote_id):
