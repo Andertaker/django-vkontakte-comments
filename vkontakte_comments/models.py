@@ -8,9 +8,20 @@ import logging
 import re
 
 from vkontakte_api.decorators import fetch_all
-from vkontakte_api.mixins import CountOffsetManagerMixin, AfterBeforeManagerMixin, OwnerableModelMixin, AuthorableModelMixin
-from vkontakte_api.models import VkontakteModel, VkontakteCRUDModel
+from vkontakte_api.mixins import CountOffsetManagerMixin, AfterBeforeManagerMixin, OwnerableModelMixin, AuthorableModelMixin, LikableModelMixin
+from vkontakte_api.models import VkontakteIDStrModel, VkontakteCRUDModel, VkontakteCRUDManager
+from vkontakte_users.models import User
+
+
 log = logging.getLogger('vkontakte_comments')
+
+
+def get_method(object):
+    namespace = get_methods_namespace(object)
+    if namespace in ['video', 'photos', 'notes']:
+        return 'createComment'
+    elif namespace in ['wall', 'board']:
+        return 'addComment'
 
 
 def get_methods_namespace(object):
@@ -45,7 +56,7 @@ class CommentRemoteManager(CountOffsetManagerMixin, AfterBeforeManagerMixin):
         # идентификатор объекта к которому оставлен комментарий.
         # напр 'video_id', 'photo_id'
         # int (числовое значение), обязательный параметр
-        kwargs[object.comments_remote_related_name] = object.remote_id
+        kwargs[object.comments_remote_related_name] = object.remote_id_short
 
         # need_likes 1 — будет возвращено дополнительное поле likes. По умолчанию поле likes не возвращается.
         # флаг, может принимать значения 1 или 0
@@ -55,27 +66,26 @@ class CommentRemoteManager(CountOffsetManagerMixin, AfterBeforeManagerMixin):
         # строка
         kwargs['sort'] = sort
 
-        object_ct = ContentType.objects.get_for_model(object)
         kwargs['extra_fields'] = {
-            'object_content_type': object_ct,
-            'object_content_type_id': object_ct.pk,
-            'object_id': object.pk,
             'object': object,
+            'owner': object.owner,
         }
 
-        return super(CommentRemoteManager, self).fetch(**kwargs)
+        return self.fetch(**kwargs)
 
 
-class Comment(AuthorableModelMixin, VkontakteModel, VkontakteCRUDModel):
+class Comment(OwnerableModelMixin, AuthorableModelMixin, LikableModelMixin, VkontakteIDStrModel, VkontakteCRUDModel):
 
     fields_required_for_update = ['comment_id', 'owner_id', 'methods_namespace']
+    likes_remote_type = 'comment'
     _commit_remote = False
 
-    remote_id = models.CharField(
-        u'ID', primary_key=True, max_length=20, help_text=u'Уникальный идентификатор', unique=True)
+    # if primary_key=True, impossible delete all comments:
+    # ValueError: invalid literal for int() with base 10: '-16297716_137668'
+#    remote_id = models.CharField(u'ID', max_length=20, help_text=u'Уникальный идентификатор', unique=True)
 
     object_content_type = models.ForeignKey(ContentType, related_name='content_type_objects_vkontakte_comments')
-    object_id = models.PositiveIntegerField(db_index=True)
+    object_id = models.BigIntegerField(db_index=True)
     object = generic.GenericForeignKey('object_content_type', 'object_id')
 
     date = models.DateTimeField(help_text=u'Дата создания', db_index=True)
@@ -84,13 +94,17 @@ class Comment(AuthorableModelMixin, VkontakteModel, VkontakteCRUDModel):
     # содержит массив объектов (фотографии, ссылки и т.п.). Более подробная
     # информация представлена на странице Описание поля attachments
 
-    # TODO: implement with tests
-#    likes = models.PositiveIntegerField(u'Кол-во лайков', default=0)
+    reply_for_content_type = models.ForeignKey(ContentType, null=True, related_name='replies')
+    reply_for_id = models.BigIntegerField(null=True, db_index=True)
+    reply_for = generic.GenericForeignKey('reply_for_content_type', 'reply_for_id')
 
-    objects = models.Manager()
+    reply_to = models.ForeignKey('self', null=True, verbose_name=u'Это ответ на комментарий')
+
+    objects = VkontakteCRUDManager()
     remote = CommentRemoteManager(remote_pk=('remote_id',), version=5.27, methods={
         'get': 'getComments',
-        'create': 'createComment',
+        # commented becouse for some namespaces method is createComment
+#       'create': 'addComment',
         'update': 'editComment',
         'delete': 'deleteComment',
         'restore': 'restoreComment',
@@ -100,45 +114,28 @@ class Comment(AuthorableModelMixin, VkontakteModel, VkontakteCRUDModel):
         verbose_name = u'Комментарий Вконтакте'
         verbose_name_plural = u'Комментарии Вконтакте'
 
-    @property
-    def owner_remote_id(self):
-        # return self.photo.remote_id.split('_')[0]
-
-        if self.object.owner_content_type.model == 'user':
-            return self.object.owner_id
-        else:
-            return -1 * self.object.owner_id
-
-        '''
-        if self.author_content_type.model == 'user':
-            return self.author_id
-        else:
-            return -1 * self.author_id
-        '''
-
-    @property
-    def remote_id_short(self):
-        return self.remote_id.split('_')[1]
-
     def prepare_create_params(self, from_group=False, **kwargs):
         if self.author == self.object.owner and self.author_content_type.model == 'group':
             from_group = True
         kwargs.update({
-            'owner_id': self.owner_remote_id,
-            'message': self.text,
+            'owner_id': self.object.owner_remote_id,
+            'message': self.text,  # video
+            'text': self.text,  # wall
 #            'reply_to_comment': self.reply_for.id if self.reply_for else '',
             'from_group': int(from_group),
             'attachments': kwargs.get('attachments', ''),
+            'method': get_method(self.object),
             'methods_namespace': get_methods_namespace(self.object),
-            self.object.comments_remote_related_name: self.object.remote_id,
+            self.object.comments_remote_related_name: self.object.remote_id_short,
         })
         return kwargs
 
     def prepare_update_params(self, **kwargs):
         kwargs.update({
-            'owner_id': self.owner_remote_id,
+            'owner_id': self.object.owner_remote_id,
             'comment_id': self.remote_id_short,
-            'message': self.text,
+            'message': self.text,  # video
+            'text': self.text,  # wall
             'attachments': kwargs.get('attachments', ''),
             'methods_namespace': get_methods_namespace(self.object),
         })
@@ -146,15 +143,23 @@ class Comment(AuthorableModelMixin, VkontakteModel, VkontakteCRUDModel):
 
     def prepare_delete_params(self):
         return {
-            'owner_id': self.owner_remote_id,
+            'owner_id': self.object.owner_remote_id,
             'comment_id': self.remote_id_short,
             'methods_namespace': get_methods_namespace(self.object),
         }
 
     def parse_remote_id_from_response(self, response):
-        if response:
-            return '%s_%s' % (self.owner_remote_id, response)
-        return None
+        id = None
+        if isinstance(response, int):
+            id = response
+        elif isinstance(response, dict):
+            for field in ['id', 'cid', 'comment_id']:
+                if field in response:
+                    id = response[field]
+                    break
+        if id is None:
+            raise ValueError('No comment ID found in response: %s' % response)
+        return '%s_%s' % (self.object.owner_remote_id, id)
 
     def get_or_create_group_or_user(self, remote_id):
         # TODO: refactor this method, may be put it to AuthorableMixin
@@ -191,4 +196,12 @@ class Comment(AuthorableModelMixin, VkontakteModel, VkontakteCRUDModel):
             self.object = self.__dict__['object']  # TODO: check is it should be already saved or not
 
         if '_' not in str(self.remote_id):
-            self.remote_id = '%s_%s' % (self.owner_remote_id, self.remote_id)
+            self.remote_id = '%s_%s' % (self.object.owner_remote_id, self.remote_id)
+
+        if 'reply_to_uid' in response:
+            self.reply_for = User.objects.get_or_create(remote_id=response['reply_to_uid'])[0]
+        if 'reply_to_cid' in response:
+            try:
+                self.reply_to = Comment.objects.get(remote_id=response['reply_to_cid'])
+            except:
+                pass

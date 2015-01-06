@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import logging
 
+from django.contrib.contenttypes import generic
 from django.contrib.contenttypes.models import ContentType
 from django.db import models, transaction
 
@@ -12,16 +13,22 @@ log = logging.getLogger('vkontakte_comments')
 
 class CommentableModelMixin(models.Model):
 
-    comments_count = models.PositiveIntegerField('Comments', null=True, help_text='The number of comments of this item')
+    comments = generic.GenericRelation(Comment, related_name='%(class)ss', verbose_name='Comments',
+                                       content_type_field='object_content_type', object_id_field='object_id')
+    comments_count = models.PositiveIntegerField('Comments', null=True,
+                                                 help_text='The number of comments of this item')
 
     class Meta:
         abstract = True
 
-    @property
-    def comments(self):
-        # TODO: set this attr by related_name
-        return Comment.objects.filter(object_id=self.pk,
-                                      object_content_type=ContentType.objects.get_for_model(self))
+    def parse(self, response):
+        if 'comments' in response:
+            value = response.pop('comments')
+            if isinstance(value, int):
+                response['comments_count'] = value
+            elif isinstance(value, dict) and 'count' in value:
+                response['comments_count'] = value['count']
+        super(CommentableModelMixin, self).parse(response)
 
     @transaction.commit_on_success
     def fetch_comments(self, *args, **kwargs):

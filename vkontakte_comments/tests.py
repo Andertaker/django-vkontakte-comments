@@ -8,6 +8,8 @@ from vkontakte_groups.factories import GroupFactory
 from vkontakte_users.factories import UserFactory, User
 from vkontakte_video.factories import AlbumFactory, VideoFactory
 from vkontakte_video.models import Album, Video
+from vkontakte_wall.factories import PostFactory
+
 from . models import Comment
 
 GROUP_ID = 16297716  # https://vk.com/cocacola
@@ -19,8 +21,11 @@ ALBUM_CRUD_ID = 55964907
 VIDEO_CRUD_ID = 170947024
 #USER_AUTHOR_ID = 201164356
 
+POST_CRUD_ID = '-59154616_366'
+USER_AUTHOR_ID = 201164356
 
-class CommentTest(TestCase):
+
+class VkontakteCommentsTest(TestCase):
 
     def setUp(self):
         self.objects_to_delete = []
@@ -97,69 +102,6 @@ class CommentTest(TestCase):
 
         self.assertEqual(comments[4].remote_id, comments2[0].remote_id)
 
-    def test_comment_crud_methods(self):
-        owner = GroupFactory(remote_id=GROUP_CRUD_ID)
-        album = AlbumFactory(remote_id=ALBUM_CRUD_ID, owner=owner)
-        video = VideoFactory(remote_id=VIDEO_CRUD_ID, album=album, owner=owner)
-
-        def assert_local_equal_to_remote(comment):
-            comment_remote = Comment.remote.fetch_by_object(
-                object=comment.object).get(remote_id=comment.remote_id)
-            self.assertEqual(comment_remote.remote_id, comment.remote_id)
-            self.assertEqual(comment_remote.text, comment.text)
-            self.assertEqual(comment_remote.author, comment.author)
-
-        # try to delete comments from prev tests
-        for comment in Comment.remote.fetch_by_object(object=video):
-            comment.delete(commit_remote=True)
-        # checks there is no remote and local comments
-        comments = Comment.remote.fetch_by_object(object=video)
-        self.assertEqual(comments.count(), 0, 'Error: There are %s comments from previous test. Delete them manually here %s' % (
-            comments.count(), video.get_url()))
-
-        # create
-        comment = Comment(text='Test comment', object=video, author=owner, date=timezone.now())
-        comment.save(commit_remote=True)
-        self.objects_to_delete += [comment]
-
-        self.assertEqual(Comment.objects.count(), 1)
-        self.assertEqual(comment.author, owner)
-        self.assertNotEqual(len(comment.remote_id), 0)
-        assert_local_equal_to_remote(comment)
-
-        # create by manager
-        comment = Comment.objects.create(
-            text='Test comment created by manager', object=video, author=owner, date=timezone.now(), commit_remote=True)
-        self.objects_to_delete += [comment]
-        self.assertEqual(Comment.objects.count(), 2)
-
-        self.assertEqual(Comment.objects.count(), 2)
-        self.assertEqual(comment.author, owner)
-        self.assertNotEqual(len(comment.remote_id), 0)
-        assert_local_equal_to_remote(comment)
-
-        # update
-        comment.text = 'Test comment updated'
-        comment.save(commit_remote=True)
-
-        self.assertEqual(Comment.objects.count(), 2)
-        assert_local_equal_to_remote(comment)
-
-        # delete
-        comment.delete(commit_remote=True)
-
-        self.assertEqual(Comment.objects.count(), 2)
-        self.assertTrue(comment.archived)
-        self.assertEqual(Comment.remote.fetch_by_object(
-            object=comment.object).filter(remote_id=comment.remote_id).count(), 0)
-
-        # restore
-        comment.restore(commit_remote=True)
-        self.assertFalse(comment.archived)
-
-        self.assertEqual(Comment.objects.count(), 2)
-        assert_local_equal_to_remote(comment)
-
     def test_parse_comment(self):
 
         response = u'''{"date": 1387304612,
@@ -182,3 +124,119 @@ class CommentTest(TestCase):
         self.assertEqual(comment.author.remote_id, 27224390)
         self.assertEqual(comment.text, u'Даёшь "Байкал"!!!!')
         self.assertIsNotNone(comment.date)
+
+    def assertCommentTheSameEverywhere(self, comment):
+        comment_remote = Comment.remote.fetch_by_object(object=comment.object).get(remote_id=comment.remote_id)
+        self.assertEqual(comment_remote.remote_id, comment.remote_id)
+        self.assertEqual(comment_remote.text, comment.text)
+        self.assertEqual(comment_remote.author, comment.author)
+
+    def assertNoCommentsForObject(self, object):
+        # try to delete comments from prev tests
+        for comment in Comment.remote.fetch_by_object(object=object):
+            comment.delete(commit_remote=True)
+        # checks there is no remote and local comments
+        comments = Comment.remote.fetch_by_object(object=object)
+        self.assertEqual(comments.count(), 0, 'Error: There are %s comments from previous test. Delete them manually here %s' % (
+            comments.count(), object.get_url()))
+
+    def test_comment_video_crud_methods(self):
+        owner = GroupFactory(remote_id=GROUP_CRUD_ID)
+        album = AlbumFactory(remote_id=ALBUM_CRUD_ID, owner=owner)
+        video = VideoFactory(remote_id=VIDEO_CRUD_ID, album=album, owner=owner)
+
+        self.assertNoCommentsForObject(video)
+
+        # create
+        comment = Comment(text='Test comment', object=video, author=owner, date=timezone.now())
+        comment.save(commit_remote=True)
+        self.objects_to_delete += [comment]
+
+        self.assertEqual(Comment.objects.count(), 1)
+        self.assertEqual(comment.author, owner)
+        self.assertNotEqual(len(comment.remote_id), 0)
+        self.assertCommentTheSameEverywhere(comment)
+
+        # create by manager
+        comment = Comment.objects.create(
+            text='Test comment created by manager', object=video, author=owner, date=timezone.now(), commit_remote=True)
+        self.objects_to_delete += [comment]
+        self.assertEqual(Comment.objects.count(), 2)
+
+        self.assertEqual(Comment.objects.count(), 2)
+        self.assertEqual(comment.author, owner)
+        self.assertNotEqual(len(comment.remote_id), 0)
+        self.assertCommentTheSameEverywhere(comment)
+
+        # update
+        comment.text = 'Test comment updated'
+        comment.save(commit_remote=True)
+
+        self.assertEqual(Comment.objects.count(), 2)
+        self.assertCommentTheSameEverywhere(comment)
+
+        # delete
+        comment.delete(commit_remote=True)
+
+        self.assertEqual(Comment.objects.count(), 2)
+        self.assertTrue(comment.archived)
+        self.assertEqual(Comment.remote.fetch_by_object(
+            object=comment.object).filter(remote_id=comment.remote_id).count(), 0)
+
+        # restore
+        comment.restore(commit_remote=True)
+        self.assertFalse(comment.archived)
+
+        self.assertEqual(Comment.objects.count(), 2)
+        self.assertCommentTheSameEverywhere(comment)
+
+    def test_comment_wall_crud_methods(self):
+        group = GroupFactory(remote_id=GROUP_CRUD_ID)
+        post = PostFactory(remote_id=POST_CRUD_ID, text='', owner=group)
+        user = UserFactory(remote_id=USER_AUTHOR_ID)
+
+        self.assertNoCommentsForObject(post)
+
+        # create
+        Comment.remote.fetch_by_object(object=post)
+        self.assertEqual(Comment.objects.count(), 0)
+
+        # create
+        comment = Comment(text='Test comment', object=post, owner=group, author=user, date=timezone.now())
+        comment.save(commit_remote=True)
+        self.objects_to_delete += [comment]
+
+        self.assertEqual(Comment.objects.count(), 1)
+        self.assertNotEqual(len(comment.remote_id), 0)
+        self.assertCommentTheSameEverywhere(comment)
+
+        # create by manager
+        comment = Comment.objects.create(
+            text='Test comment created by manager', object=post, owner=group, author=user, date=timezone.now(), commit_remote=True)
+        self.objects_to_delete += [comment]
+
+        self.assertEqual(Comment.objects.count(), 2)
+        self.assertNotEqual(len(comment.remote_id), 0)
+        self.assertCommentTheSameEverywhere(comment)
+
+        # update
+        comment.text = 'Test comment updated'
+        comment.save(commit_remote=True)
+
+        self.assertEqual(Comment.objects.count(), 2)
+        self.assertCommentTheSameEverywhere(comment)
+
+        # delete
+        comment.delete(commit_remote=True)
+
+        self.assertEqual(Comment.objects.count(), 2)
+        self.assertTrue(comment.archived)
+        self.assertEqual(Comment.remote.fetch_by_object(
+            object=comment.object).filter(remote_id=comment.remote_id).count(), 0)
+
+        # restore
+        comment.restore(commit_remote=True)
+        self.assertFalse(comment.archived)
+
+        self.assertEqual(Comment.objects.count(), 2)
+        self.assertCommentTheSameEverywhere(comment)
