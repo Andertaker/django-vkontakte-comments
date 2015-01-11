@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
-import logging
-
 from django.contrib.contenttypes import generic
 from django.contrib.contenttypes.models import ContentType
 from django.db import models, transaction
+import logging
 
 from .models import Comment
-
-
 log = logging.getLogger('vkontakte_comments')
 
 
@@ -37,3 +34,12 @@ class CommentableModelMixin(models.Model):
     @property
     def comments_remote_related_name(self):
         raise NotImplementedError()
+
+    def parse(self, response):
+        if 'comments' in response:
+            value = response.pop('comments')
+            if isinstance(value, int):
+                response['comments_count'] = value
+            elif isinstance(value, dict) and 'count' in value:
+                response['comments_count'] = value['count']
+        super(CommentableModelMixin, self).parse(response)
