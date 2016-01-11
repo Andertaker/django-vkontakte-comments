@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
+import logging
+
 from django.contrib.contenttypes import generic
 from django.contrib.contenttypes.models import ContentType
-from django.db import models, transaction
+from django.db import models
 from django.utils import timezone
 from django.utils.encoding import python_2_unicode_compatible
-import logging
-import re
-
-from vkontakte_api.decorators import fetch_all
-from vkontakte_api.mixins import CountOffsetManagerMixin, AfterBeforeManagerMixin, OwnerableModelMixin, AuthorableModelMixin, LikableModelMixin
+from vkontakte_api.decorators import fetch_all, atomic
+from vkontakte_api.mixins import CountOffsetManagerMixin, AfterBeforeManagerMixin, OwnerableModelMixin, \
+    AuthorableModelMixin, LikableModelMixin, get_or_create_group_or_user
 from vkontakte_api.models import VkontakteIDStrModel, VkontakteCRUDModel, VkontakteCRUDManager
 from vkontakte_users.models import User
 
@@ -30,12 +30,12 @@ def get_methods_namespace(object):
 
 class CommentRemoteManager(CountOffsetManagerMixin, AfterBeforeManagerMixin):
 
-    @transaction.commit_on_success
+    @atomic
     @fetch_all(default_count=100)
     def fetch_album(self, album, sort='asc', need_likes=True, **kwargs):
         raise NotImplementedError
 
-    @transaction.commit_on_success
+    @atomic
     @fetch_all(default_count=100)
     def fetch_by_object(self, object, sort='asc', need_likes=True, **kwargs):
         if sort not in ['asc', 'desc']:
@@ -93,6 +93,7 @@ class Comment(OwnerableModelMixin, AuthorableModelMixin, LikableModelMixin, Vkon
     # attachments - присутствует только если у сообщения есть прикрепления,
     # содержит массив объектов (фотографии, ссылки и т.п.). Более подробная
     # информация представлена на странице Описание поля attachments
+    attachments = models.TextField(u'Вложения')
 
     reply_for_content_type = models.ForeignKey(ContentType, null=True, related_name='replies')
     reply_for_id = models.BigIntegerField(null=True, db_index=True)
@@ -113,6 +114,10 @@ class Comment(OwnerableModelMixin, AuthorableModelMixin, LikableModelMixin, Vkon
     class Meta:
         verbose_name = u'Комментарий Вконтакте'
         verbose_name_plural = u'Комментарии Вконтакте'
+
+    @property
+    def slug_prefix(self):
+        return get_methods_namespace(self.object)
 
     def prepare_create_params(self, from_group=False, **kwargs):
         if self.author == self.object.owner and self.author_content_type.model == 'group':
@@ -161,30 +166,14 @@ class Comment(OwnerableModelMixin, AuthorableModelMixin, LikableModelMixin, Vkon
             raise ValueError('No comment ID found in response: %s' % response)
         return '%s_%s' % (self.object.owner_remote_id, id)
 
-    def get_or_create_group_or_user(self, remote_id):
-        # TODO: refactor this method, may be put it to AuthorableMixin
-        from vkontakte_groups.models import Group
-        from vkontakte_users.models import User
-
-        if remote_id > 0:
-            Model = User
-        elif remote_id < 0:
-            Model = Group
-        else:
-            raise ValueError("remote_id shouldn't be equal to 0")
-
-        return Model.objects.get_or_create(remote_id=abs(remote_id))
-
     def parse(self, response):
         # undocummented feature of API. if from_id == 101 -> comment by group
         if response['from_id'] == 101:
             self.author = self.object.owner
         else:
-            self.author = self.get_or_create_group_or_user(response.pop('from_id'))[0]
+            self.author = get_or_create_group_or_user(response.pop('from_id'))
 
-        # TODO: add parsing attachments and polls
-        if 'attachments' in response:
-            response.pop('attachments')
+        # TODO: May be this field does not exists in late versions of API
         if 'poll' in response:
             response.pop('poll')
 
