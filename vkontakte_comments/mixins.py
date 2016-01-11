@@ -2,6 +2,7 @@
 from django.contrib.contenttypes import generic
 from django.db import models
 from vkontakte_api.decorators import atomic
+import logging
 
 from .models import Comment
 log = logging.getLogger('vkontakte_comments')
